@@ -12,6 +12,10 @@ resource "aws_lambda_function" "scraper" {
   architectures                  = ["arm64"]
   timeout                        = 120
   reserved_concurrent_executions = 1
+
+  tracing_config {
+    mode = "Active"
+  }
 }
 
 resource "aws_lambda_permission" "scraper" {

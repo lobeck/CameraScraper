@@ -3,7 +3,7 @@ set -eo pipefail
 rm lambda.zip
 mkdir build
 
-pip install --target build/ bs4 requests # boto3 is already installed
+pip install --target build/ -r requirements.txt
 
 cd build
 zip -r ../lambda.zip .

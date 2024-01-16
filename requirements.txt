@@ -1,3 +1,6 @@
 requests
 bs4
 boto3
+
+jsonpickle
+aws-xray-sdk

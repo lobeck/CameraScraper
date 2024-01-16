@@ -9,11 +9,16 @@ import boto3
 import requests
 from bs4 import BeautifulSoup
 
+from aws_xray_sdk.core import xray_recorder
+from aws_xray_sdk.core import patch_all
+
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
 
 logger = logging.getLogger()
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+
+patch_all()
 
 # config handling
 paginator = ssm_client.get_paginator("get_parameters_by_path")
@@ -50,7 +55,9 @@ def lambda_handler(event, context):
         return
 
     try:
+        xray_recorder.begin_subsegment('scrape')
         last_run = scrape(config)
+        xray_recorder.end_subsegment()
         if last_run.year == 1970:
             # if no pictures are found, back off anyway to prevent hammering
             config.lastRun = datetime.now()
@@ -67,7 +74,9 @@ def scrape(config: Config):
     latest_picture = datetime(1970, 1, 1)
 
     # start scraping
+    xray_recorder.begin_subsegment("fetching")
     page = requests.get(config.url)
+    xray_recorder.end_subsegment()
 
     soup = BeautifulSoup(page.text, 'html.parser')
 
