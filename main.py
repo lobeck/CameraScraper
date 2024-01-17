@@ -30,11 +30,12 @@ paginator = ssm_client.get_paginator("get_parameters_by_path")
 class Config:
     url: str
     bucketName: str
+    knownPrefixes:  list[str]
     interval: timedelta = None
 
 
 def fetch_config() -> Config:
-    config = Config(url="", bucketName="")
+    config = Config(url="", bucketName="", knownPrefixes=["east", "west"])
     for page in paginator.paginate(Path="/cameraScraper", WithDecryption=True):
         for param in page["Parameters"]:
             if param["Name"].endswith("/interval"):
@@ -43,6 +44,8 @@ def fetch_config() -> Config:
                 config.url = param["Value"]
             if param["Name"].endswith("/bucket"):
                 config.bucketName = param["Value"]
+            if param["Name"].endswith("/knownPrefixes"):
+                config.bucketName = param["Value"].split(",")
     return config
 
 
@@ -84,6 +87,13 @@ def lambda_handler(event, context):
 
 def scrape(config: Config):
     latest_picture = datetime(1970, 1, 1)
+    latest_pictures = {}
+    for prefix in config.knownPrefixes:
+        prefix_latest_picture = table.get_item(Key={"Key": f"{prefix}-latestPicture"})
+        if "Item" in prefix_latest_picture:
+            latest_pictures[prefix] = datetime.strptime(prefix_latest_picture["Item"]["Value"], "%Y-%m-%d %H:%M:%S")
+        else:
+            latest_pictures[prefix] = datetime(1970, 1, 1)
 
     # start scraping
     page = requests.get(config.url)
@@ -98,14 +108,18 @@ def scrape(config: Config):
         regex = r"(20[0-9]{6}-[0-9]{6})"
         match = re.search(regex, filename)
         logger.debug(match.group(0))
+
+        prefix = "east"
+        if "west" in img:
+            prefix = "west"
+
         picture_time = datetime.strptime(match.group(0), "%Y%m%d-%H%M%S")
         if picture_time > latest_picture:
             latest_picture = picture_time
         logger.debug(picture_time)
 
-        prefix = "east"
-        if "west" in img:
-            prefix = "west"
+        if picture_time > latest_pictures[prefix]:
+            latest_pictures[prefix] = picture_time
 
         object_name = f"{prefix}/{picture_time.strftime('%Y/%m/%d')}/{picture_time.strftime('%H%M%S')}.jpg"
         logger.debug(object_name)
@@ -124,6 +138,9 @@ def scrape(config: Config):
             else:
                 raise e
 
+    for prefix in config.knownPrefixes:
+        table.put_item(Item={"Key": f"{prefix}-latestPicture", "Value": latest_pictures[prefix].strftime("%Y-%m-%d %H:%M:%S")})
+    print(f"latest_pictures: {latest_pictures}")
     print(f"latest_picture: {latest_picture}")
     return latest_picture
 
