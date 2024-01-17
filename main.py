@@ -14,6 +14,9 @@ from aws_xray_sdk.core import patch_all
 
 s3_client = boto3.client("s3")
 ssm_client = boto3.client("ssm")
+dynamo_resource = boto3.resource('dynamodb')
+
+table = dynamo_resource.Table('CameraScraper-KeyValue')
 
 logger = logging.getLogger()
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
@@ -23,36 +26,48 @@ patch_all()
 # config handling
 paginator = ssm_client.get_paginator("get_parameters_by_path")
 
-
 @dataclass
 class Config:
     url: str
     bucketName: str
-    interval: timedelta = timedelta(minutes=5)
-    lastRun: datetime = datetime(1970, 1, 1)
+    interval: timedelta = None
 
 
-def lambda_handler(event, context):
-    logger.debug(event)
-    logger.debug(context)
-
+def fetch_config() -> Config:
     config = Config(url="", bucketName="")
-
     for page in paginator.paginate(Path="/cameraScraper", WithDecryption=True):
         for param in page["Parameters"]:
-            if param["Name"].endswith("/lastRun"):
-                config.lastRun = datetime.strptime(param["Value"], "%Y-%m-%d %H:%M:%S")
             if param["Name"].endswith("/interval"):
                 config.interval = timedelta(minutes=float(param["Value"]))
             if param["Name"].endswith("/url"):
                 config.url = param["Value"]
             if param["Name"].endswith("/bucket"):
                 config.bucketName = param["Value"]
+    return config
+
+
+# initialize basics on cold start
+config = fetch_config()
+
+
+def lambda_handler(event, context):
+    global config
+    logger.debug(event)
+    logger.debug(context)
+
+    last_run_item = table.get_item(Key={"Key": "LastRun"})
+    if "Item" in last_run_item:
+        last_run = datetime.strptime(last_run_item["Item"]["Value"], "%Y-%m-%d %H:%M:%S")
+    else:
+        last_run = datetime(1970, 1, 1)
 
     logger.debug(config)
-    if config.lastRun + config.interval > datetime.now():
-        logger.info(f"Last run is too recent - check back {config.lastRun + config.interval}")
+    if last_run + config.interval > datetime.now():
+        logger.info(f"Last run is too recent - check back {last_run + config.interval}")
         return
+
+    # refresh config before scrape
+    config = fetch_config()
 
     try:
         xray_recorder.begin_subsegment('scrape')
@@ -60,23 +75,18 @@ def lambda_handler(event, context):
         xray_recorder.end_subsegment()
         if last_run.year == 1970:
             # if no pictures are found, back off anyway to prevent hammering
-            config.lastRun = datetime.now()
-        else:
-            config.lastRun = last_run
+            last_run = datetime.now()
     except Exception as e:
         logger.error(e)
     finally:
-        ssm_client.put_parameter(Name="/cameraScraper/lastRun", Value=config.lastRun.strftime("%Y-%m-%d %H:%M:%S"),
-                                 Type="String", Overwrite=True)
+        table.put_item(Item={"Key": "LastRun", "Value": last_run.strftime("%Y-%m-%d %H:%M:%S")})
 
 
 def scrape(config: Config):
     latest_picture = datetime(1970, 1, 1)
 
     # start scraping
-    xray_recorder.begin_subsegment("fetching")
     page = requests.get(config.url)
-    xray_recorder.end_subsegment()
 
     soup = BeautifulSoup(page.text, 'html.parser')
 

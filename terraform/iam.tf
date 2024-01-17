@@ -29,6 +29,11 @@ data "aws_iam_policy_document" "lambda" {
     actions   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
     resources = ["*"]
   }
+  statement {
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.KeyValue.arn]
+  }
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
