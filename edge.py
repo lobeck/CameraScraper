@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta
 
 import boto3
+from botocore.config import Config
 
-dynamo_resource = boto3.resource("dynamodb")
+dynamo_resource = boto3.resource("dynamodb", config=Config(region_name='eu-central-1',))
 
 table = dynamo_resource.Table("CameraScraper-KeyValue")
 
