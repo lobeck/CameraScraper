@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Optional
 
 import boto3
 import requests
@@ -17,6 +18,7 @@ ssm_client = boto3.client("ssm")
 dynamo_resource = boto3.resource('dynamodb')
 
 table = dynamo_resource.Table('CameraScraper-KeyValue')
+sunset_table = dynamo_resource.Table('CameraScraper-SunTimes')
 
 logger = logging.getLogger()
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
@@ -25,7 +27,6 @@ patch_all()
 
 # config handling
 paginator = ssm_client.get_paginator("get_parameters_by_path")
-
 
 @dataclass
 class Config:
@@ -52,6 +53,24 @@ class METAR:
     valid_from: datetime
 
 
+class SunsetCache:
+    def __init__(self):
+        self.cache = {}
+
+    def get(self, station: str, date: datetime) -> Optional[dict]:
+        if station not in self.cache:
+            self.cache[station] = {}
+        d = date.strftime("%Y-%m-%d")
+        if d not in self.cache[station]:
+            entry = sunset_table.get_item(Key={"Station": station, "Date": d})
+            if "Item" in entry:
+                self.cache[station][d] = entry["Item"]
+                return entry["Item"]
+        else:
+            return self.cache[station][d]
+        return None
+
+
 def fetch_config() -> Config:
     config = Config(url="", bucketName="", knownPrefixes=["east", "west"])
     for page in paginator.paginate(Path="/cameraScraper", WithDecryption=True):
@@ -69,6 +88,7 @@ def fetch_config() -> Config:
 
 # initialize basics on cold start
 config = fetch_config()
+sunset_cache = SunsetCache()
 
 
 def lambda_handler(event, context):
@@ -158,6 +178,15 @@ def scrape(config: Config):
                     metadata = {}
                     if metar is not None and metar.valid_from < picture_time < metar.valid_from + timedelta(hours=1):
                         metadata["metar"] = metar.text
+                    try:
+                        sunset = sunset_cache.get("EDMA", picture_time)
+                        if sunset is not None:
+                            metadata["BCMT"] = sunset["BCMT"]
+                            metadata["SR"] = sunset["SR"]
+                            metadata["SS"] = sunset["SS"]
+                            metadata["ECET"] = sunset["ECET"]
+                    except Exception as e:
+                        print(e)
                     s3_client.put_object(Body=io.BytesIO(image.content), Bucket=config.bucketName, Key=object_name,
                                          ContentType="image/jpeg", StorageClass="INTELLIGENT_TIERING", Metadata=metadata
                                          )

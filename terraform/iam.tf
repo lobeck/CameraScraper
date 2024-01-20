@@ -56,6 +56,11 @@ data "aws_iam_policy_document" "lambda_scraper" {
     actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
     resources = [aws_dynamodb_table.KeyValue.arn]
   }
+  statement {
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.SunTimes.arn]
+  }
 }
 
 resource "aws_iam_role" "scraper" {
