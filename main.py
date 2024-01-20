@@ -26,12 +26,30 @@ patch_all()
 # config handling
 paginator = ssm_client.get_paginator("get_parameters_by_path")
 
+
 @dataclass
 class Config:
     url: str
     bucketName: str
-    knownPrefixes:  list[str]
+    knownPrefixes: list[str]
     interval: timedelta = None
+
+
+@dataclass
+class METAR:
+    def __init__(self, station='EDMA'):
+        r = requests.get(f"https://aviationweather.gov/api/data/metar?ids={station}", timeout=(1, 1))
+        r.raise_for_status()
+        text = r.text
+        if text.startswith(station):
+            self.text = text[:-1]  # cut trailing newline
+
+        now = datetime.now()
+        metar_time = datetime.strptime(self.text[5:11], "%d%H%M")
+        self.valid_from = metar_time.replace(year=now.year, month=now.month)
+
+    text: str
+    valid_from: datetime
 
 
 def fetch_config() -> Config:
@@ -95,6 +113,12 @@ def scrape(config: Config):
         else:
             latest_pictures[prefix] = datetime(1970, 1, 1)
 
+    metar = None
+    try:
+        metar = METAR()
+    except Exception as e:
+        print(e)
+
     # start scraping
     page = requests.get(config.url)
 
@@ -131,10 +155,12 @@ def scrape(config: Config):
                 logger.debug(f"Object {object_name} does not exist")
                 image = requests.get(img)
                 if image.status_code == 200:
-                    s3_client.upload_fileobj(io.BytesIO(image.content), config.bucketName, object_name,
-                                             ExtraArgs={"ContentType": "image/jpeg",
-                                                        "StorageClass": "INTELLIGENT_TIERING"}
-                                             )
+                    metadata = {}
+                    if metar is not None and metar.valid_from < picture_time < metar.valid_from + timedelta(hours=1):
+                        metadata["metar"] = metar.text
+                    s3_client.put_object(Body=io.BytesIO(image.content), Bucket=config.bucketName, Key=object_name,
+                                         ContentType="image/jpeg", StorageClass="INTELLIGENT_TIERING", Metadata=metadata
+                                         )
             else:
                 raise e
 
